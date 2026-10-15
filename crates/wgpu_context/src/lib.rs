@@ -9,6 +9,7 @@ use wgpu::{
 
 mod alpha_blitter;
 mod buffer_renderer;
+mod device_limits;
 mod error;
 mod surface_renderer;
 mod util;
@@ -48,11 +49,8 @@ impl DeviceHandle {
 
         // Determine limits to request
         // The user may override the limits
-        let required_limits = override_limits.clone().unwrap_or_else(|| Limits {
-            // Fix iOS simulator
-            max_inter_stage_shader_variables: 15,
-            ..Limits::default()
-        });
+        let required_limits =
+            device_limits::requested_device_limits(override_limits, &adapter.limits());
 
         // Create the device and the queue
         let descripter = wgpu::DeviceDescriptor {
