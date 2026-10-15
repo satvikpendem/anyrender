@@ -10,6 +10,8 @@ use wgpu::{
 mod alpha_blitter;
 mod buffer_renderer;
 mod error;
+#[cfg(any(target_os = "android", test))]
+mod surface_backends;
 mod surface_renderer;
 mod util;
 
@@ -120,17 +122,35 @@ impl WGPUContext {
         extra_features: Option<Features>,
         override_limits: Option<Limits>,
     ) -> Self {
-        Self {
-            instance: Instance::new(wgpu::InstanceDescriptor {
-                backends: wgpu::Backends::from_env().unwrap_or_default(),
+        let backends = wgpu::Backends::from_env().unwrap_or_default();
+        let new_instance = |backends| {
+            Instance::new(wgpu::InstanceDescriptor {
+                backends,
                 flags: wgpu::InstanceFlags::from_build_config().with_env(),
                 backend_options: wgpu::BackendOptions::from_env_or_default(),
                 memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-
-                // TODO: support passing display handle
-                // Needed for opengl/webgl
+                // TODO: support passing display handle. Needed for OpenGL/Wayland.
                 display: None,
-            }),
+            })
+        };
+        let instance = new_instance(backends);
+        #[cfg(target_os = "android")]
+        let instance = if backends.contains(wgpu::Backends::VULKAN | wgpu::Backends::GL) {
+            let has_vulkan_adapter =
+                !pollster::block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN)).is_empty();
+            let selected = surface_backends::android_surface_backends(backends, has_vulkan_adapter);
+            if selected != backends {
+                // Do this before creating any native-window surface.
+                drop(instance);
+                new_instance(selected)
+            } else {
+                instance
+            }
+        } else {
+            instance
+        };
+        Self {
+            instance,
             device_pool: Vec::new(),
             extra_features,
             override_limits,
