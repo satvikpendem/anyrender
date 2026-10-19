@@ -37,6 +37,9 @@ fn spawn_init<F: Future<Output = ()>>(f: F) {
 struct ActiveRenderState {
     renderer: VelloHybridRenderer,
     resources: Resources,
+    // Image IDs refer to this Resources instance's atlas slots. Recreate the
+    // lookup with the resources so retained ImageData is uploaded after resume.
+    cached_images: FxHashMap<u64, ImageId>,
     depth_texture_view: TextureView,
     texture_bindings: FxHashMap<ResourceId, TextureView>,
     render_surface: SurfaceRenderer<'static>,
@@ -173,7 +176,6 @@ pub struct VelloHybridWindowRenderer {
     wgpu_context: WGPUContext,
     scene: VelloHybridScene,
     config: VelloHybridRendererOptions,
-    cached_images: FxHashMap<u64, ImageId>,
 }
 impl VelloHybridWindowRenderer {
     #[allow(clippy::new_without_default)]
@@ -191,7 +193,6 @@ impl VelloHybridWindowRenderer {
             wgpu_context,
             window_handle: None,
             scene: VelloHybridScene::new_with(0, 0, render_settings.level),
-            cached_images: FxHashMap::default(),
         }
     }
 
@@ -437,6 +438,7 @@ impl WindowRenderer for VelloHybridWindowRenderer {
                 active: ActiveRenderState {
                     renderer,
                     resources,
+                    cached_images: FxHashMap::default(),
                     depth_texture_view,
                     render_surface,
                     texture_bindings: FxHashMap::default(),
@@ -455,6 +457,13 @@ impl WindowRenderer for VelloHybridWindowRenderer {
                     let device_handle = active.render_surface.device_handle.clone();
                     self.wgpu_context.device_pool.push(device_handle);
                     self.render_state = RenderState::Active(active);
+                    // set_size can update the scene while initialization is
+                    // Pending. Bring the new surface/depth target to that size
+                    // before reporting that the renderer is ready to paint.
+                    self.set_size(
+                        u32::from(self.scene.width()),
+                        u32::from(self.scene.height()),
+                    );
                     true
                 }
                 _ => false,
@@ -473,16 +482,21 @@ impl WindowRenderer for VelloHybridWindowRenderer {
                 height as u16,
                 self.config.render_settings.level,
             );
-            if let RenderState::Active(active) = &mut self.render_state {
-                active.render_surface.resize(width, height);
-                active.depth_texture_view = VelloHybridRenderer::create_depth_texture_view(
-                    active.render_surface.device(),
-                    &RenderSize {
-                        width: width as u16,
-                        height: height as u16,
-                    },
-                );
-            };
+        }
+        // The scene may already have this size from a Pending update, so its
+        // dimensions cannot tell us whether the GPU surface needs resizing.
+        if let RenderState::Active(active) = &mut self.render_state
+            && (active.render_surface.config.width != width
+                || active.render_surface.config.height != height)
+        {
+            active.render_surface.resize(width, height);
+            active.depth_texture_view = VelloHybridRenderer::create_depth_texture_view(
+                active.render_surface.device(),
+                &RenderSize {
+                    width: width as u16,
+                    height: height as u16,
+                },
+            );
         }
     }
 
@@ -508,7 +522,7 @@ impl WindowRenderer for VelloHybridWindowRenderer {
             device: render_surface.device(),
             queue: render_surface.queue(),
             encoder: &mut encoder,
-            cache: &mut self.cached_images,
+            cache: &mut state.cached_images,
         };
 
         let mut scene_painter = VelloHybridScenePainter {

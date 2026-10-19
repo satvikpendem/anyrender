@@ -11,3 +11,6 @@ edition.workspace = true
 [dependencies]
 wgpu = { workspace = true }
 futures-intrusive = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+pollster = { workspace = true }
